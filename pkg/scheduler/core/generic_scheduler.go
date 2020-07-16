@@ -150,8 +150,10 @@ func (g *genericScheduler) snapshot() error {
 func (g *genericScheduler) Schedule(ctx context.Context, prof *profile.Profile, state *framework.CycleState, pod *v1.Pod) (result ScheduleResult, err error) {
 	trace := utiltrace.New("Scheduling", utiltrace.Field{Key: "namespace", Value: pod.Namespace}, utiltrace.Field{Key: "name", Value: pod.Name})
 	defer trace.LogIfLong(100 * time.Millisecond)
+	klog.Infof("Scheduling %v/%v", pod.Namespace, pod.Name)
 
 	if err := podPassesBasicChecks(pod, g.pvcLister); err != nil {
+		klog.Infof("Pod %v/%v failed basic checks", pod.Namespace, pod.Name)
 		return result, err
 	}
 	trace.Step("Basic checks done")
@@ -180,6 +182,7 @@ func (g *genericScheduler) Schedule(ctx context.Context, prof *profile.Profile, 
 	trace.Step("Computing predicates done")
 
 	if len(filteredNodes) == 0 {
+		klog.Infof("Pod %v/%v failed scheduling:\n  nodes snapshot: %#v \n  statuses: %#v \n", pod.Namespace, pod.Name, g.nodeInfoSnapshot, filteredNodesStatuses)
 		return result, &FitError{
 			Pod:                   pod,
 			NumAllNodes:           g.nodeInfoSnapshot.NumNodes(),
@@ -200,6 +203,7 @@ func (g *genericScheduler) Schedule(ctx context.Context, prof *profile.Profile, 
 	startPriorityEvalTime := time.Now()
 	// When only one node after predicate, just use it.
 	if len(filteredNodes) == 1 {
+		klog.Infof("Pod %v/%v scheduled on %v:\n  nodes snapshot: %#v \n  statuses: %#v \n", pod.Namespace, pod.Name, filteredNodes[0].Name, g.nodeInfoSnapshot, filteredNodesStatuses)
 		metrics.DeprecatedSchedulingAlgorithmPriorityEvaluationSecondsDuration.Observe(metrics.SinceInSeconds(startPriorityEvalTime))
 		return ScheduleResult{
 			SuggestedHost:  filteredNodes[0].Name,
@@ -219,6 +223,7 @@ func (g *genericScheduler) Schedule(ctx context.Context, prof *profile.Profile, 
 	host, err := g.selectHost(priorityList)
 	trace.Step("Prioritizing done")
 
+	klog.Infof("Pod %v/%v scheduled on %v:\n  nodes snapshot: %#v \n  statuses: %#v \n", pod.Namespace, pod.Name, host, g.nodeInfoSnapshot, filteredNodesStatuses)
 	return ScheduleResult{
 		SuggestedHost:  host,
 		EvaluatedNodes: len(filteredNodes) + len(filteredNodesStatuses),
@@ -422,6 +427,7 @@ func (g *genericScheduler) findNodesThatFitPod(ctx context.Context, prof *profil
 	if err != nil {
 		return nil, nil, err
 	}
+	klog.Infof("pod %v/%v After scheduling, filtered: %#v, filtered nodes: %#v", pod.Namespace, pod.Name, filtered, filteredNodesStatuses)
 	return filtered, filteredNodesStatuses, nil
 }
 
@@ -432,6 +438,7 @@ func (g *genericScheduler) findNodesThatPassFilters(ctx context.Context, prof *p
 		return nil, err
 	}
 
+	klog.Infof("Looking for a node for %v/%v, going through %#v", pod.Namespace, pod.Name, allNodes)
 	numNodesToFind := g.numFeasibleNodesToFind(int32(len(allNodes)))
 
 	// Create filtered list with enough space to avoid growing it
@@ -459,18 +466,24 @@ func (g *genericScheduler) findNodesThatPassFilters(ctx context.Context, prof *p
 			errCh.SendErrorWithCancel(err, cancel)
 			return
 		}
+		klog.Infof("pod %v/%v on node %v, fits: %v, status: %#v", pod.Namespace, pod.Name, nodeInfo.Node().Name, fits, status)
 		if fits {
 			length := atomic.AddInt32(&filteredLen, 1)
 			if length > numNodesToFind {
+				klog.Infof("pod %v/%v on node %v, too many nodes fit", pod.Namespace, pod.Name, nodeInfo.Node().Name)
 				cancel()
 				atomic.AddInt32(&filteredLen, -1)
 			} else {
 				filtered[length-1] = nodeInfo.Node()
+				klog.Infof("pod %v/%v on node %v, added to feasible list", pod.Namespace, pod.Name, nodeInfo.Node().Name)
 			}
 		} else {
 			statusesLock.Lock()
 			if !status.IsSuccess() {
+				klog.Infof("pod %v/%v on node %v : status is not success", pod.Namespace, pod.Name, nodeInfo.Node().Name)
 				statuses[nodeInfo.Node().Name] = status
+			} else {
+				klog.Infof("pod %v/%v on node %v : status is success but does not fit", pod.Namespace, pod.Name, nodeInfo.Node().Name)
 			}
 			statusesLock.Unlock()
 		}
@@ -489,6 +502,7 @@ func (g *genericScheduler) findNodesThatPassFilters(ctx context.Context, prof *p
 	// are found.
 	workqueue.ParallelizeUntil(ctx, 16, len(allNodes), checkNode)
 	processedNodes := int(filteredLen) + len(statuses)
+	klog.Infof("pod %v/%v : processed %v nodes, %v fit", pod.Namespace, pod.Name, processedNodes, filteredLen)
 	g.nextStartNodeIndex = (g.nextStartNodeIndex + processedNodes) % len(allNodes)
 
 	filtered = filtered[:filteredLen]
@@ -508,6 +522,7 @@ func (g *genericScheduler) findNodesThatPassExtenders(pod *v1.Pod, filtered []*v
 			continue
 		}
 		filteredList, failedMap, err := extender.Filter(pod, filtered)
+		klog.Infof("pod %v/%v : extender %v , feasible nodes before: %#v , after: %#v, failed: %#v", pod.Namespace, pod.Name, filtered, filteredList, failedMap)
 		if err != nil {
 			if extender.IsIgnorable() {
 				klog.Warningf("Skipping extender %v as it returned error %v and has ignorable flag set",
@@ -524,6 +539,7 @@ func (g *genericScheduler) findNodesThatPassExtenders(pod *v1.Pod, filtered []*v
 				statuses[failedNodeName].AppendReason(failedMsg)
 			}
 		}
+		klog.Infof("pod %v/%v : updated statuses: %#v", pod.Namespace, pod.Name, statuses)
 		filtered = filteredList
 	}
 	return filtered, nil
