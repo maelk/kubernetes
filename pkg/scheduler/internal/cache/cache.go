@@ -125,6 +125,7 @@ func newNodeInfoListItem(ni *schedulernodeinfo.NodeInfo) *nodeInfoListItem {
 // linked list. The head is the most recently updated NodeInfo.
 // We assume cache lock is already acquired.
 func (cache *schedulerCache) moveNodeInfoToHead(name string) {
+	klog.Info("cacheHead updated with %v", name)
 	ni, ok := cache.nodes[name]
 	if !ok {
 		klog.Errorf("No NodeInfo with name %v found in the cache", name)
@@ -153,6 +154,7 @@ func (cache *schedulerCache) moveNodeInfoToHead(name string) {
 // linked list.
 // We assume cache lock is already acquired.
 func (cache *schedulerCache) removeNodeInfoFromList(name string) {
+	klog.Infof("Removing node %v from cache", name)
 	ni, ok := cache.nodes[name]
 	if !ok {
 		klog.Errorf("No NodeInfo with name %v found in the cache", name)
@@ -216,9 +218,40 @@ func (cache *schedulerCache) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 	// way around.
 	updateNodesHavePodsWithAffinity := false
 
+	klog.Info("Dumping nodes in cache")
+	for k, v := range cache.nodes {
+		klog.Infof("Node %v, item %v, NodeInfo %#v", k, v, v.info)
+		if v.info.Node() != nil {
+			klog.Infof("    Node Name %v", v.info.Node().Name)
+		}
+		if v.prev != nil {
+			if v.prev.info.Node() != nil {
+				klog.Infof("    prev %v", v.prev.info.Node().Name)
+			} else {
+				klog.Infof("    prev %v", v.prev.info)
+			}
+		} else {
+			klog.Infof("    No prev")
+		}
+		if v.next != nil {
+			if v.next.info.Node() != nil {
+				klog.Infof("    next %v", v.next.info.Node().Name)
+			} else {
+				klog.Infof("    next %v", v.next.info)
+			}
+		} else {
+			klog.Infof("    No next")
+		}
+	}
+	klog.Infof("Cache head: %#v", cache.headNode.info)
+	klog.Infof("Node info map: %#v", nodeSnapshot.nodeInfoMap)
+	klog.Infof("Node info list: %#v", nodeSnapshot.nodeInfoList)
+	klog.Infof("Node tree %#v", cache.nodeTree)
+
 	// Start from the head of the NodeInfo doubly linked list and update snapshot
 	// of NodeInfos updated after the last snapshot.
 	for node := cache.headNode; node != nil; node = node.next {
+		klog.Infof("Updating node %#v", node.info)
 		if node.info.GetGeneration() <= snapshotGeneration {
 			// all the nodes are updated before the existing snapshot. We are done.
 			break
@@ -230,6 +263,7 @@ func (cache *schedulerCache) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 		if np := node.info.Node(); np != nil {
 			existing, ok := nodeSnapshot.nodeInfoMap[np.Name]
 			if !ok {
+				klog.Infof("Adding node %v to snapshot", np.Name)
 				updateAllLists = true
 				existing = &schedulernodeinfo.NodeInfo{}
 				nodeSnapshot.nodeInfoMap[np.Name] = existing
@@ -277,13 +311,20 @@ func (cache *schedulerCache) UpdateSnapshot(nodeSnapshot *Snapshot) error {
 }
 
 func (cache *schedulerCache) updateNodeInfoSnapshotList(snapshot *Snapshot, updateAll bool) {
+	klog.Info("Updating the snapshot node info list")
 	snapshot.havePodsWithAffinityNodeInfoList = make([]*schedulernodeinfo.NodeInfo, 0, cache.nodeTree.numNodes)
 	if updateAll {
 		// Take a snapshot of the nodes order in the tree
 		snapshot.nodeInfoList = make([]*schedulernodeinfo.NodeInfo, 0, cache.nodeTree.numNodes)
 		for i := 0; i < cache.nodeTree.numNodes; i++ {
 			nodeName := cache.nodeTree.next()
+			klog.Infof("Adding node %v to snapshot nodeInfoList", nodeName)
 			if n := snapshot.nodeInfoMap[nodeName]; n != nil {
+				if n.Node() != nil {
+					klog.Infof("Appending %v", n.Node().Name)
+				} else {
+					klog.Infof("Appending %#v", n)
+				}
 				snapshot.nodeInfoList = append(snapshot.nodeInfoList, n)
 				if len(n.PodsWithAffinity()) > 0 {
 					snapshot.havePodsWithAffinityNodeInfoList = append(snapshot.havePodsWithAffinityNodeInfoList, n)
@@ -591,6 +632,7 @@ func (cache *schedulerCache) AddNode(node *v1.Node) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
+	klog.Infof("Adding node %v to cache", node.Name)
 	n, ok := cache.nodes[node.Name]
 	if !ok {
 		n = newNodeInfoListItem(schedulernodeinfo.NewNodeInfo())
@@ -609,6 +651,7 @@ func (cache *schedulerCache) UpdateNode(oldNode, newNode *v1.Node) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
+	klog.Infof("Updating cached node %#v to node %#v", *oldNode, *newNode)
 	n, ok := cache.nodes[newNode.Name]
 	if !ok {
 		n = newNodeInfoListItem(schedulernodeinfo.NewNodeInfo())
@@ -634,6 +677,7 @@ func (cache *schedulerCache) RemoveNode(node *v1.Node) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
+	klog.Infof("Deleting node %v from cache", node.Name)
 	_, ok := cache.nodes[node.Name]
 	if !ok {
 		return fmt.Errorf("node %v is not found", node.Name)
